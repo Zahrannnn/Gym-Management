@@ -1,6 +1,549 @@
-@Gym_Management_HostAddress = http://localhost:5168
+###############################################################################
+# Gym Management API — all flows
+# Base: http://localhost:5168  |  Swagger: /swagger
+# Open in VS / Rider / REST Client. Run named requests top → bottom within a flow.
+# Default admin: admin / Admin#12345!
+###############################################################################
 
-GET {{Gym_Management_HostAddress}}/weatherforecast/
-Accept: application/json
+@host = http://localhost:5168
+@adminToken = {{adminLogin.response.body.token}}
+@staffToken = {{staffLogin.response.body.token}}
 
-###
+###############################################################################
+# FLOW 0 — Auth
+###############################################################################
+
+### 0.1 Admin login
+# @name adminLogin
+POST {{host}}/api/auth/login
+Content-Type: application/json
+
+{
+  "username": "admin",
+  "password": "Admin#12345!"
+}
+
+### 0.2 Staff login (seeded in tests only — skip if you only have admin)
+# @name staffLogin
+POST {{host}}/api/auth/login
+Content-Type: application/json
+
+{
+  "username": "staff1",
+  "password": "Staff#12345!"
+}
+
+### 0.3 Me (token health check)
+GET {{host}}/api/auth/me
+Authorization: Bearer {{adminToken}}
+
+### 0.4 Bad password → 401 unauthorized
+POST {{host}}/api/auth/login
+Content-Type: application/json
+
+{
+  "username": "admin",
+  "password": "wrong"
+}
+
+### 0.5 Missing fields → 422 validation
+POST {{host}}/api/auth/login
+Content-Type: application/json
+
+{
+  "username": "admin"
+}
+
+###############################################################################
+# FLOW 1 — Admin setup (plans + settings)
+###############################################################################
+
+### 1.1 Create Time plan
+# @name createTimePlan
+POST {{host}}/api/plans
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "name": "Monthly",
+  "type": "Time",
+  "durationDays": 30,
+  "price": 500
+}
+
+### 1.2 Create Session credits plan (NO sessions field)
+# @name createSessionPlan
+POST {{host}}/api/plans
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "name": "Session credits",
+  "type": "Session",
+  "price": 0
+}
+
+### 1.3 List plans
+GET {{host}}/api/plans
+Authorization: Bearer {{adminToken}}
+
+### 1.4 Update / deactivate plan
+PUT {{host}}/api/plans/{{createTimePlan.response.body.id}}
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "name": "Monthly",
+  "durationDays": 30,
+  "price": 550,
+  "isActive": true
+}
+
+### 1.5 Get settings
+GET {{host}}/api/settings
+Authorization: Bearer {{adminToken}}
+
+### 1.6 Update settings
+PUT {{host}}/api/settings
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "GymName": "Iron Temple",
+  "DuplicateScanThresholdMinutes": "15",
+  "LowBalanceThreshold": "3",
+  "TimezoneId": "UTC"
+}
+
+### 1.7 Session plan WITH sessions → 422 (not allowed)
+POST {{host}}/api/plans
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "name": "Bad pack",
+  "type": "Session",
+  "sessions": 30,
+  "price": 100
+}
+
+###############################################################################
+# FLOW 2 — Time member: create → subscribe → pay → check-in → portal → renew
+###############################################################################
+
+### 2.1 Create customer
+# @name timeCustomer
+POST {{host}}/api/customers
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "firstName": "Ada",
+  "lastName": "Lovelace",
+  "phone": "01011112222",
+  "notes": "Time member"
+}
+
+### 2.2 List / search
+GET {{host}}/api/customers?query=Ada&page=1&pageSize=20
+Authorization: Bearer {{adminToken}}
+
+### 2.3 Detail (includes token)
+GET {{host}}/api/customers/{{timeCustomer.response.body.id}}
+Authorization: Bearer {{adminToken}}
+
+### 2.4 Card print (token + name + gym — does NOT rotate)
+GET {{host}}/api/customers/{{timeCustomer.response.body.id}}/card
+Authorization: Bearer {{adminToken}}
+
+### 2.5 Update profile
+PUT {{host}}/api/customers/{{timeCustomer.response.body.id}}
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "firstName": "Ada",
+  "lastName": "Lovelace",
+  "phone": "01011112222",
+  "notes": "Updated notes"
+}
+
+### 2.6 Create time subscription
+# @name timeSub
+POST {{host}}/api/subscriptions
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "customerId": "{{timeCustomer.response.body.id}}",
+  "planId": "{{createTimePlan.response.body.id}}",
+  "startDate": "2026-08-26"
+}
+
+### 2.7 Record payment (does not gate check-in)
+POST {{host}}/api/payments
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "subscriptionId": "{{timeSub.response.body.id}}",
+  "amount": 500,
+  "method": "Cash",
+  "note": "Paid at desk"
+}
+
+### 2.8 Check-in → granted
+POST {{host}}/api/checkins
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "token": "{{timeCustomer.response.body.token}}"
+}
+
+### 2.9 Check-in again quickly → denied duplicate_scan (HTTP 200)
+POST {{host}}/api/checkins
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "token": "{{timeCustomer.response.body.token}}"
+}
+
+### 2.10 Public portal (no auth)
+GET {{host}}/api/public/status/{{timeCustomer.response.body.token}}
+
+### 2.11 List subscriptions for customer
+GET {{host}}/api/subscriptions?customerId={{timeCustomer.response.body.id}}
+Authorization: Bearer {{adminToken}}
+
+### 2.12 Filter by status
+GET {{host}}/api/subscriptions?customerId={{timeCustomer.response.body.id}}&status=Active
+Authorization: Bearer {{adminToken}}
+
+### 2.13 Renew time plan (start = day after current endDate)
+# Read endDate from timeSub response, then set startDate = endDate + 1 day
+# @name timeRenewal
+POST {{host}}/api/subscriptions
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "customerId": "{{timeCustomer.response.body.id}}",
+  "planId": "{{createTimePlan.response.body.id}}",
+  "startDate": "2026-09-25"
+}
+
+### 2.14 Overlapping time sub → 409 overlap_conflict
+POST {{host}}/api/subscriptions
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "customerId": "{{timeCustomer.response.body.id}}",
+  "planId": "{{createTimePlan.response.body.id}}",
+  "startDate": "2026-08-26"
+}
+
+###############################################################################
+# FLOW 3 — Session member: custom totalSessions → pay → check-ins → exhaust
+###############################################################################
+
+### 3.1 Create customer
+# @name sessionCustomer
+POST {{host}}/api/customers
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "firstName": "Grace",
+  "lastName": "Hopper",
+  "phone": "01033334444"
+}
+
+### 3.2 Session sub WITHOUT totalSessions → 422
+POST {{host}}/api/subscriptions
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "customerId": "{{sessionCustomer.response.body.id}}",
+  "planId": "{{createSessionPlan.response.body.id}}",
+  "startDate": "2026-08-26"
+}
+
+### 3.3 Session sub with totalSessions = 2
+# @name sessionSub
+POST {{host}}/api/subscriptions
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "customerId": "{{sessionCustomer.response.body.id}}",
+  "planId": "{{createSessionPlan.response.body.id}}",
+  "startDate": "2026-08-26",
+  "totalSessions": 2,
+  "overridePrice": 80
+}
+
+### 3.4 Pay
+POST {{host}}/api/payments
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "subscriptionId": "{{sessionSub.response.body.id}}",
+  "amount": 80,
+  "method": "Card"
+}
+
+### 3.5 Temporarily disable duplicate window (Admin)
+PUT {{host}}/api/settings
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "DuplicateScanThresholdMinutes": "0"
+}
+
+### 3.6 Check-in #1 → granted (1 left)
+POST {{host}}/api/checkins
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "token": "{{sessionCustomer.response.body.token}}"
+}
+
+### 3.7 Check-in #2 → granted (0 left)
+POST {{host}}/api/checkins
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "token": "{{sessionCustomer.response.body.token}}"
+}
+
+### 3.8 Check-in #3 → denied no_sessions_remaining (HTTP 200)
+POST {{host}}/api/checkins
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "token": "{{sessionCustomer.response.body.token}}"
+}
+
+### 3.9 Restore duplicate window
+PUT {{host}}/api/settings
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "DuplicateScanThresholdMinutes": "15"
+}
+
+### 3.10 Live session blocks new sub → 409 until cancel
+POST {{host}}/api/subscriptions
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "customerId": "{{sessionCustomer.response.body.id}}",
+  "planId": "{{createSessionPlan.response.body.id}}",
+  "startDate": "2026-08-26",
+  "totalSessions": 5
+}
+
+### 3.11 Cancel exhausted/live session sub (always allowed with reason)
+POST {{host}}/api/subscriptions/{{sessionSub.response.body.id}}/cancel
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "reason": "Sold a new pack"
+}
+
+### 3.12 New session pack after cancel
+POST {{host}}/api/subscriptions
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "customerId": "{{sessionCustomer.response.body.id}}",
+  "planId": "{{createSessionPlan.response.body.id}}",
+  "startDate": "2026-08-26",
+  "totalSessions": 10,
+  "overridePrice": 150
+}
+
+###############################################################################
+# FLOW 4 — QR reset (only rotate path)
+###############################################################################
+
+### 4.1 Reset token → new token; old QR dead
+# @name resetToken
+POST {{host}}/api/customers/{{sessionCustomer.response.body.id}}/token/reset
+Authorization: Bearer {{adminToken}}
+
+### 4.2 Old token → public 404
+GET {{host}}/api/public/status/{{sessionCustomer.response.body.token}}
+
+### 4.3 New token → public 200
+GET {{host}}/api/public/status/{{resetToken.response.body.token}}
+
+### 4.4 Card still returns current (new) token — no rotate
+GET {{host}}/api/customers/{{sessionCustomer.response.body.id}}/card
+Authorization: Bearer {{adminToken}}
+
+###############################################################################
+# FLOW 5 — Scheduled (not started) + archive denial
+###############################################################################
+
+### 5.1 Customer for future sub
+# @name futureCustomer
+POST {{host}}/api/customers
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "firstName": "Future",
+  "lastName": "Member",
+  "phone": "01055556666"
+}
+
+### 5.2 Scheduled time sub (start in the future)
+POST {{host}}/api/subscriptions
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "customerId": "{{futureCustomer.response.body.id}}",
+  "planId": "{{createTimePlan.response.body.id}}",
+  "startDate": "2027-01-01"
+}
+
+### 5.3 Check-in → denied not_started (HTTP 200)
+POST {{host}}/api/checkins
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "token": "{{futureCustomer.response.body.token}}"
+}
+
+### 5.4 Archive customer
+POST {{host}}/api/customers/{{futureCustomer.response.body.id}}/archive
+Authorization: Bearer {{adminToken}}
+
+### 5.5 Check-in archived → denied customer_inactive (HTTP 200)
+POST {{host}}/api/checkins
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "token": "{{futureCustomer.response.body.token}}"
+}
+
+### 5.6 Unknown token → denied token_unknown (HTTP 200)
+POST {{host}}/api/checkins
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "token": "not-a-real-token"
+}
+
+###############################################################################
+# FLOW 6 — Reports + health
+###############################################################################
+
+### 6.1 Dashboard
+GET {{host}}/api/reports/dashboard
+Authorization: Bearer {{adminToken}}
+
+### 6.2 Liveness
+GET {{host}}/health
+
+### 6.3 Readiness (DB)
+GET {{host}}/health/ready
+
+###############################################################################
+# FLOW 7 — AuthZ / validation edge cases
+###############################################################################
+
+### 7.1 Anonymous me → 401
+GET {{host}}/api/auth/me
+
+### 7.2 Staff cannot create plans → 403 (use staffToken if available)
+POST {{host}}/api/plans
+Authorization: Bearer {{staffToken}}
+Content-Type: application/json
+
+{
+  "name": "Nope",
+  "type": "Time",
+  "durationDays": 7,
+  "price": 1
+}
+
+### 7.3 Staff cannot read settings → 403
+GET {{host}}/api/settings
+Authorization: Bearer {{staffToken}}
+
+### 7.4 Blank customer name → 422
+POST {{host}}/api/customers
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "firstName": "   ",
+  "lastName": "X",
+  "phone": "01099998888"
+}
+
+### 7.5 Bad phone → 422
+POST {{host}}/api/customers
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "firstName": "Bad",
+  "lastName": "Phone",
+  "phone": "01092abc"
+}
+
+### 7.6 Payment amount 0 → 422
+POST {{host}}/api/payments
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "subscriptionId": "00000000-0000-0000-0000-000000000001",
+  "amount": 0,
+  "method": "Cash"
+}
+
+### 7.7 Cancel without reason → 422
+POST {{host}}/api/subscriptions/00000000-0000-0000-0000-000000000001/cancel
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "reason": " "
+}
+
+### 7.8 Check-in blank token → 422
+POST {{host}}/api/checkins
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "token": "  "
+}
+
+### 7.9 Unknown customer id → 404
+GET {{host}}/api/customers/00000000-0000-0000-0000-000000000099
+Authorization: Bearer {{adminToken}}
+
+### 7.10 Unknown public token → 404
+GET {{host}}/api/public/status/totally-unknown-token
