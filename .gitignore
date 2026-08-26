@@ -1,0 +1,9 @@
+bin/
+obj/
+.vs/
+.vscode/
+*.user
+TestResults/
+App_Data/
+_delegation/
+*.pubxml.user
