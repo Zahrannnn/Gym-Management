@@ -64,8 +64,8 @@ Staff (JWT required):
 | `POST /api/customers/{id}/archive` | soft archive |
 | `POST /api/customers/{id}/token/reset` | rotate token, returns new raw token; writes audit log |
 | `GET /api/customers/{id}/card` | `{ token, customerName, gymName }` for Flutter QR card printing |
-| `GET/POST /api/plans`, `PUT /api/plans/{id}` | plan create; PUT deactivates/updates (`IsActive`) |
-| `POST /api/subscriptions` | `{customerId, planId, startDate, endDate?, overridePrice?}`; endDate defaults to start + plan.DurationDays − 1 |
+| `GET/POST /api/plans`, `PUT /api/plans/{id}` | Time: `durationDays`. Session: generic credit product (no fixed `sessions` on the plan) |
+| `POST /api/subscriptions` | `{customerId, planId, startDate, endDate?, totalSessions?, overridePrice?}`; Time: endDate defaults to start + DurationDays − 1; Session: **totalSessions required** |
 | `POST /api/subscriptions/{id}/cancel` | body reason **required** → writes audit log |
 | `GET /api/subscriptions?customerId=&status=` | status is the derived status |
 | `POST /api/payments` | `{subscriptionId, amount, method, note?}` |
@@ -87,7 +87,8 @@ Public (no auth):
 ```
 StaffUser(Id, FullName, Username unique, PasswordHash, Role, IsActive)
 Customer(Id, FirstName, LastName, Phone, TokenHash unique, TokenRotatedAtUtc, IsActive, Notes, CreatedAtUtc, CreatedByStaffId?)
-Plan(Id, Name, Type: Time|Session, DurationDays int?, Sessions int?, Price decimal, IsActive)
+Plan(Id, Name, Type: Time|Session, DurationDays int?, Sessions int? unused, Price decimal, IsActive)
+  // Time: DurationDays required. Session: generic credit product — TotalSessions is set on the Subscription, not the Plan.
 Subscription(Id, CustomerId FK, PlanId FK, Type snapshot, StartDate date, EndDate date?, TotalSessions int?, UsedSessions int default 0, PricePaid decimal?, CancelledAtUtc?, CancelReason?, CreatedAtUtc, CreatedByStaffId)
 AttendanceLog(Id, CustomerId, SubscriptionId?, StaffId, AtUtc, Result: Granted|Denied, Reason?, RemainingSessionsAfter?)
 Payment(Id, SubscriptionId, CustomerId, Amount, Method: Cash|Card|Transfer, Note?, RecordedAtUtc, RecordedByStaffId)
